@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, Data, DeriveInput, Field, Fields};
+use syn::{parse_macro_input, Data, DeriveInput, Field, Fields, Type};
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -16,18 +16,28 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let setters = foreach_members(&input.data, |f| {
         let name = &f.ident;
         let member_name = format_ident!("builder_member_{}", f.ident.as_ref().unwrap());
-        let ty = &f.ty;
-        quote_spanned! {f.span()=>
-            pub fn #name (&mut self, v: #ty) -> &mut Self {
-                self.#member_name = Some(v);
-                self
+        if let Some(inner_ty) = ty_inner_type("Option", &f.ty) {
+            let ty = inner_ty;
+            quote_spanned! {f.span()=>
+                pub fn #name (&mut self, v: #ty) -> &mut Self {
+                    self.#member_name = Some(Some(v));
+                    self
+                }
+            }
+        } else {
+            let ty = &f.ty;
+            quote_spanned! {f.span()=>
+                pub fn #name (&mut self, v: #ty) -> &mut Self {
+                    self.#member_name = Some(v);
+                    self
+                }
             }
         }
     });
     let builder = foreach_members(&input.data, |f| {
         let name = &f.ident;
         let member_name = format_ident!("builder_member_{}", f.ident.as_ref().unwrap());
-        quote_spanned! (f.span()=> #name : self.#member_name.clone().unwrap_or(Default::default()),)
+        quote_spanned!(f.span()=> #name : self.#member_name.clone().unwrap_or(Default::default()),)
     });
     let expanded = quote! {
         impl #name {
@@ -62,4 +72,24 @@ fn foreach_members(data: &Data, f: impl Fn(&Field) -> TokenStream) -> TokenStrea
         },
         _ => unimplemented!(),
     }
+}
+
+fn ty_inner_type<'a>(wrapper: &str, ty: &'a Type) -> Option<&'a Type> {
+    if let Type::Path(ref p) = ty {
+        if p.path.segments.len() != 1 || p.path.segments[0].ident != wrapper {
+            return None;
+        }
+
+        if let syn::PathArguments::AngleBracketed(ref inner_ty) = p.path.segments[0].arguments {
+            if inner_ty.args.len() != 1 {
+                return None;
+            }
+
+            let inner_ty = inner_ty.args.first().unwrap();
+            if let syn::GenericArgument::Type(ref t) = inner_ty {
+                return Some(t);
+            }
+        }
+    }
+    None
 }
